@@ -17,15 +17,45 @@ So we do not assume. `calibrate()` reconstructs the final-layer logits both ways
 and compares them against the logits the model actually returned, then records
 which convention holds. If neither reconstruction matches, it raises — a
 mis-detected lens must stop the pipeline, not degrade it.
+
+**How close is "matches".** Not an absolute number of logits. In bf16 a logit of
+magnitude ~24 lives on a grid spaced 0.125 apart, so a *correctly rounded*
+reconstruction still differs from the model's own by 0.0625 — half a ULP, the
+floor. An absolute tolerance below that fails no matter how right the lens is,
+which is a bug in the check rather than a finding about the lens. So the
+magnitude tolerance is derived from the compute dtype (see `_ulp`), and the
+load-bearing criteria are dtype-independent: the two conventions must be
+separated by a wide margin, and the reconstruction must rank tokens the way the
+model does. See DECISIONS.md §10.
 """
 
 from __future__ import annotations
 
+import math
 from typing import Sequence
 
 import torch
 
 from .model import ModelBundle, forward_last
+
+
+# Bits of significand precision, including the implicit leading bit.
+_SIGNIFICAND_BITS = {
+    torch.bfloat16: 8, torch.float16: 11, torch.float32: 24, torch.float64: 53,
+}
+
+
+def _ulp(magnitude: float, dtype: torch.dtype) -> float:
+    """Spacing of `dtype`'s representable grid at `magnitude`.
+
+    The unit in the last place. Two numbers closer together than this are the same
+    number in `dtype`, so it is the floor on any reconstruction error — no amount
+    of correct arithmetic gets below half of it.
+    """
+    bits = _SIGNIFICAND_BITS.get(dtype, 24)
+    if not (magnitude > 0.0) or not math.isfinite(magnitude):
+        return 0.0
+    return 2.0 ** (math.floor(math.log2(magnitude)) - (bits - 1))
 
 
 def _final_norm(bundle: ModelBundle):
@@ -56,18 +86,37 @@ def _unembed(bundle: ModelBundle):
 @torch.no_grad()
 def calibrate(bundle: ModelBundle,
               probe_prompts: Sequence[str] | None = None,
-              tol: float = 2e-2) -> dict:
+              tol: float | None = None,
+              ulp_budget: float = 4.0,
+              min_discrimination: float = 20.0,
+              abs_floor: float = 1e-4,
+              rank_k: int = 8) -> dict:
     """Decide whether the last hidden state is pre- or post-final-norm.
 
     Sets `bundle.lens_mode` to "post_norm" (last state already normed) or
     "pre_norm" (norm must be applied), and returns the reconstruction errors so
-    they can go in the manifest. Raises RuntimeError if neither convention
-    reproduces the model's logits.
+    they can go in the manifest. Raises RuntimeError if the lens cannot be shown
+    to reproduce the model's own logits.
 
-    `tol` is on max absolute logit error. bf16 logits of magnitude ~20 carry
-    ~0.06 of representation error on their own, so the two hypotheses are
-    separated by orders of magnitude, not by a hair: the wrong one is typically
-    off by whole logits.
+    Three things must hold, and each can fail independently:
+
+    1. **Magnitude.** The winning convention's max absolute logit error is within
+       `tol`. `tol` is *derived from the model's dtype*, not fixed: it is
+       `ulp_budget` times the ULP of the compute dtype at the observed logit
+       magnitude. In bf16 a logit of ~24 sits on a grid spaced 0.125 apart, so
+       correctly-rounded arithmetic still lands 0.0625 away and an absolute
+       tolerance below that is unsatisfiable however right the lens is. Pass an
+       explicit `tol` to override.
+    2. **Discrimination.** The winner must beat the loser by `min_discrimination`
+       *unless both conventions are within `tol`*, in which case the choice is
+       immaterial — that happens when the final norm is near-idempotent (a
+       LayerNorm still at weight=1, bias=0), and both reconstructions are the
+       model's own logits. What this rules out is the dangerous middle: two
+       conventions that are similarly *wrong*, where the detection is a coin flip.
+    3. **Rank agreement.** The reconstruction must put the same token first and the
+       same `rank_k` tokens in the top `rank_k`. This is what the lens is actually
+       used for — ranking candidate answers — and unlike (1) it does not move when
+       the dtype does.
     """
     probe_prompts = list(probe_prompts or [
         "Question: What is the capital of France?\nAnswer:",
@@ -86,31 +135,74 @@ def calibrate(bundle: ModelBundle,
     err_direct = float((direct - logits).abs().max())
     err_normed = float((normed - logits).abs().max())
 
-    if err_direct <= tol and err_direct < err_normed:
-        mode = "post_norm"
-    elif err_normed <= tol and err_normed < err_direct:
-        mode = "pre_norm"
+    # The error floor the model's own arithmetic imposes, so a failure can be read
+    # as "the lens is wrong" rather than "the dtype cannot do better than this".
+    max_abs_logit = float(logits.abs().max())
+    ulp = _ulp(max_abs_logit, param_dtype)
+    derived_tol = max(ulp_budget * ulp, abs_floor)
+    tol_used = derived_tol if tol is None else float(tol)
+
+    if err_direct <= err_normed:
+        mode, recon, err_best, err_worst = "post_norm", direct, err_direct, err_normed
     else:
+        mode, recon, err_best, err_worst = "pre_norm", normed, err_normed, err_direct
+
+    discrimination = err_worst / max(err_best, 1e-12)
+    both_within_tol = err_worst <= tol_used
+
+    k = min(rank_k, int(logits.shape[-1]))
+    argmax_ok = bool((recon.argmax(-1) == logits.argmax(-1)).all())
+    a, b = recon.topk(k, -1).indices, logits.topk(k, -1).indices
+    topk_ok = all(set(a[i].tolist()) == set(b[i].tolist()) for i in range(a.shape[0]))
+
+    failures = []
+    if err_best > tol_used:
+        failures.append(f"magnitude: best error {err_best:.4g} > tol {tol_used:.4g} "
+                        f"({err_best / ulp:.2f} ULP, budget {ulp_budget})")
+    if discrimination < min_discrimination and not both_within_tol:
+        failures.append(f"discrimination: {discrimination:.2f}x < "
+                        f"{min_discrimination}x while the losing convention "
+                        f"({err_worst:.4g}) is outside tol — the two are similarly "
+                        f"wrong, so the detection is a coin flip")
+    if not argmax_ok:
+        failures.append("rank: reconstruction and model disagree on the top-1 token")
+    if not topk_ok:
+        failures.append(f"rank: top-{k} token sets differ")
+
+    if failures:
         raise RuntimeError(
-            "logit lens self-check FAILED: neither convention reproduces the "
-            f"model's logits (direct max-abs-err={err_direct:.4g}, "
-            f"after-norm={err_normed:.4g}, tol={tol}). Do not trust any Test 1 "
-            "number until this is resolved — the lens is not reading what it "
-            "thinks it is reading.")
+            "logit lens self-check FAILED. Do not trust any Test 1 number until "
+            "this is resolved — the lens is not reading what it thinks it is "
+            "reading.\n  " + "\n  ".join(failures) +
+            f"\n  err_direct={err_direct:.4g}  err_after_norm={err_normed:.4g}"
+            f"\n  max|logit|={max_abs_logit:.4g}  {param_dtype} ULP there={ulp:.4g}"
+            f"  -> best error is {err_best / ulp if ulp else float('nan'):.2f} ULP")
 
     bundle.lens_mode = mode
     report = {
         "lens_mode": mode,
         "err_direct": err_direct,
         "err_after_norm": err_normed,
-        "tol": tol,
+        "tol": tol_used,
+        "tol_derived": derived_tol,
+        "tol_overridden": tol is not None,
+        "max_abs_logit": max_abs_logit,
+        "compute_dtype": str(param_dtype),
+        "ulp_at_max_logit": ulp,
+        "err_best_in_ulp": (err_best / ulp) if ulp else None,
+        "discrimination": discrimination,
+        "both_within_tol": both_within_tol,
+        "argmax_agrees": argmax_ok,
+        "topk_agrees": topk_ok,
+        "rank_k": k,
         "n_hidden_states": int(hidden.shape[1]),
         "n_layers": bundle.n_layers,
         "probe_prompts": len(probe_prompts),
         "passed": True,
     }
-    print(f"[lens] mode={mode}  err_direct={err_direct:.3g}  "
-          f"err_after_norm={err_normed:.3g}  (tol {tol})")
+    print(f"[lens] mode={mode}  err={err_best:.3g} "
+          f"({report['err_best_in_ulp']:.2f} ULP of {param_dtype}, tol {tol_used:.3g})"
+          f"  discrimination={discrimination:.0f}x  top-{k} rank agrees={topk_ok}")
     return report
 
 

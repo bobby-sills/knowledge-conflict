@@ -199,6 +199,43 @@ def tiny_bundle(request):
     return load_model("sshleifer/tiny-gpt2", dtype="float32", device_map=None)
 
 
+class TestUlp:
+    """The dtype grid spacing the lens tolerance is derived from.
+
+    This exists because the first Colab run died on a tolerance of 2e-2 against a
+    reconstruction error of 0.0625 — which was *half a ULP*, i.e. arithmetically
+    optimal. An absolute tolerance below the dtype's own floor cannot be met.
+    """
+
+    def test_bfloat16_spacing_at_llama_logit_magnitudes(self):
+        from pilot.lens import _ulp
+        # 23.875 is in [16, 32), bf16 has 8 bits of significand -> 2**(4-7).
+        assert _ulp(23.875, torch.bfloat16) == pytest.approx(0.125)
+        # The observed err_direct was exactly half of this.
+        assert 0.0625 == pytest.approx(0.5 * _ulp(23.875, torch.bfloat16))
+
+    def test_spacing_doubles_across_a_power_of_two(self):
+        from pilot.lens import _ulp
+        assert _ulp(15.9, torch.bfloat16) == pytest.approx(0.0625)
+        assert _ulp(16.1, torch.bfloat16) == pytest.approx(0.125)
+
+    def test_float32_is_far_finer_than_bfloat16(self):
+        from pilot.lens import _ulp
+        assert _ulp(24.0, torch.float32) < _ulp(24.0, torch.bfloat16) / 1000
+
+    def test_degenerate_magnitudes_do_not_explode(self):
+        from pilot.lens import _ulp
+        assert _ulp(0.0, torch.bfloat16) == 0.0
+        assert _ulp(float("nan"), torch.bfloat16) == 0.0
+        assert _ulp(float("inf"), torch.bfloat16) == 0.0
+
+    def test_a_bf16_tolerance_is_looser_than_the_old_hardcoded_one(self):
+        # Pins the actual bug: the old tol=2e-2 was below the bf16 floor at
+        # Llama-3 logit magnitudes, so the check could never pass on this model.
+        from pilot.lens import _ulp
+        assert 4.0 * _ulp(23.875, torch.bfloat16) > 2e-2
+
+
 @pytest.mark.slow
 class TestLensAgainstRealModel:
     def test_calibrate_reproduces_the_models_logits(self, tiny_bundle):
@@ -210,14 +247,49 @@ class TestLensAgainstRealModel:
         assert report["lens_mode"] in ("post_norm", "pre_norm")
         assert min(report["err_direct"], report["err_after_norm"]) <= report["tol"]
 
-    def test_the_two_conventions_are_clearly_separated(self, tiny_bundle):
+    def test_the_conventions_are_separated_or_both_correct(self, tiny_bundle):
         # The wrong convention should be off by orders of magnitude, not a hair —
-        # otherwise the detection is a coin flip.
+        # otherwise the detection is a coin flip. Asserting only `bad > good`, as
+        # this test originally did, would pass on a coin flip.
+        #
+        # The exception this fixture may exercise: tiny-gpt2 is randomly
+        # initialised, so its ln_f is still weight=1/bias=0 and therefore close to
+        # idempotent. Then both conventions reproduce the logits and the choice is
+        # immaterial. That is a pass, not a coin flip.
         from pilot.lens import calibrate
         r = calibrate(tiny_bundle)
-        good = min(r["err_direct"], r["err_after_norm"])
-        bad = max(r["err_direct"], r["err_after_norm"])
-        assert bad > good
+        assert r["discrimination"] >= 20.0 or r["both_within_tol"]
+
+    def test_reconstruction_ranks_tokens_like_the_model(self, tiny_bundle):
+        from pilot.lens import calibrate
+        r = calibrate(tiny_bundle)
+        assert r["argmax_agrees"] is True
+        assert r["topk_agrees"] is True
+
+    def test_tolerance_is_derived_from_the_dtype_not_hardcoded(self, tiny_bundle):
+        from pilot.lens import _ulp, calibrate
+        r = calibrate(tiny_bundle)
+        assert r["tol_overridden"] is False
+        expected = max(4.0 * _ulp(r["max_abs_logit"],
+                                  getattr(torch, r["compute_dtype"].split(".")[-1])),
+                       1e-4)
+        assert r["tol"] == pytest.approx(expected)
+
+    def test_an_impossible_tolerance_still_fails_loudly(self, tiny_bundle):
+        # The magnitude check must remain capable of failing when overridden.
+        from pilot.lens import calibrate
+        with pytest.raises(RuntimeError, match="magnitude"):
+            calibrate(tiny_bundle, tol=0.0)
+
+    def test_demanding_absurd_discrimination_fails(self, tiny_bundle):
+        # The discrimination check must remain capable of failing.
+        from pilot.lens import calibrate
+        if calibrate(tiny_bundle)["both_within_tol"]:
+            pytest.skip("this fixture's final norm is near-idempotent, so the "
+                        "discrimination gate is correctly bypassed — see the real "
+                        "model, where the two conventions differ by ~90x")
+        with pytest.raises(RuntimeError, match="discrimination"):
+            calibrate(tiny_bundle, min_discrimination=1e12)
 
     def test_hidden_states_count_is_layers_plus_one(self, tiny_bundle):
         from pilot.model import forward_last

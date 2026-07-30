@@ -1,0 +1,18 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Run artefacts. On Colab these live in Drive (config.default_project_dir); these
+# two are the local and smoke-test fallbacks.
+run/
+run-smoke/
+
+# Vendored baselines are cloned at a pinned commit by pilot/vendor.py, never
+# committed — the pin lives in config.VENDOR_COMMIT.
+vendor/
+
+# Machine-local Claude Code permissions (contains absolute nix store paths), plus
+# the transient files its atomic writes leave behind.
+.claude/settings.local.json
+*.tmp
+*.tmp.*

@@ -376,8 +376,48 @@ nothing to show it.
 
 `lens.calibrate()` reconstructs the final-layer logits both ways, compares against
 the logits the model actually returned, records which convention holds, and
-**raises** if neither matches within tolerance. Stage 02 calls it before capturing
-a single fact and writes the result to `results/lens_check.json`.
+**raises** if neither matches. Stage 02 calls it before capturing a single fact and
+writes the result to `results/lens_check.json`.
+
+**Measured, 2026-07-29, A100-40GB.** `post_norm` — the last hidden state is already
+normed, as the trap above predicts. `err_direct = 0.0625`, `err_after_norm = 5.594`,
+so the conventions are separated by **89.5×**, and the reconstruction reproduces the
+model's top-64 tokens *in exact order*.
+
+**The tolerance is derived from the dtype, not fixed. [revised after the first run]**
+The first Colab session died here, before capturing anything, on `tol = 2e-2` against
+that `err_direct = 0.0625`. The error was not a lens fault: `max|logit| = 23.875`,
+where the bf16 grid is spaced `2^(4-7) = 0.125` apart, so 0.0625 is **exactly half a
+ULP** — correct rounding, the arithmetic floor. A tolerance of 0.02 demanded 0.16-ULP
+agreement in bf16, which no correct implementation can reach. `lens.py`'s own
+docstring already stated the floor was "~0.06" and then set the tolerance below it.
+The check had in fact worked and then discarded its own answer.
+
+This is a bug in the instrument, not a kill criterion, and the fix is not to loosen
+the constant — an absolute logit tolerance is simply the wrong specification for a
+model whose logits live on a coarse grid. The criterion is now three parts, each able
+to fail on its own:
+
+| Criterion | Threshold | Measured | Why it is there |
+|---|---|---|---|
+| magnitude | `4 × ULP(max\|logit\|, dtype)` = 0.5 | 0.0625 (0.50 ULP) | scales with the model instead of pinning a number meaningless outside one dtype |
+| discrimination | ≥ 20×, waived if *both* conventions are within tol | 89.5× | catches two conventions that are similarly **wrong** — the coin-flip case magnitude alone cannot see |
+| rank agreement | top-1 and top-8 identical to the model's | both hold | dtype-independent, and it is what the lens is actually used for |
+
+The waiver on discrimination matters: if the final norm is near-idempotent (a
+LayerNorm still at weight = 1, bias = 0, as in the `tiny-gpt2` test fixture) both
+conventions reproduce the logits and the choice is immaterial. Raising there would be
+a false alarm. The dangerous case is both conventions landing similarly far off, which
+is exactly when the waiver does not apply.
+
+Failure messages now quote the error in ULP, because the ULP multiple is the number
+that makes such a failure readable at a glance — and its absence is what turned this
+into a debugging session. Two things this cost, worth recording: the fp32 `tiny-gpt2`
+fixture reconstructs **bit-exactly** (`err = 0`), so a test asserting that `tol = 0.0`
+must fail was itself wrong; and
+`test_the_two_conventions_are_clearly_separated` had asserted only `bad > good`,
+which passes on a coin flip while its docstring claimed "orders of magnitude, not a
+hair". Both are fixed.
 
 **Left padding everywhere, with explicit `position_ids`. [build]** With left padding
 the last position of every row is that row's final prompt token, so "the residual
@@ -486,7 +526,9 @@ against. Reviewers will ask.
 
 - [ ] Ambiguous fraction from stage 01, and whether 6/8 and 0/8 held up (§1.6).
 - [ ] Agreement rate between our prior labels and TriState-Bench's GAPS labels.
-- [ ] `lens_check.json`: which convention the lens found, and the reconstruction error.
+- [x] `lens_check.json`: which convention the lens found, and the reconstruction error.
+      **`post_norm`, err 0.0625 = 0.50 ULP of bf16, 89.5× separation, top-64 order
+      preserved.** See §10.
 - [ ] First-token-usable fraction, and whether Test 1 changed when restricted to it.
 - [ ] Whether the vendored metrics imported, or the fallback was used (§1.7).
 - [ ] The three tuned oracle τ constants.

@@ -33,8 +33,10 @@ succeeded.
 
 | Check | Expected | Result |
 |---|---|---|
-| Logit lens reproduces the model's final-layer logits | max abs err ≤ 2e-2 | TBD |
-| Lens convention detected | `post_norm` or `pre_norm` | TBD |
+| Logit lens reproduces the model's final-layer logits | max abs err ≤ 4 ULP of the compute dtype | **PASS** — 0.0625 = **0.50 ULP** of bf16 (tol 0.5) |
+| The two lens conventions are cleanly separated | ≥ 20× | **PASS** — **89.5×** (0.0625 vs 5.594) |
+| Lens reproduces the model's token ranking | top-1 and top-8 identical | **PASS** — top-64 identical *in order* |
+| Lens convention detected | `post_norm` or `pre_norm` | **`post_norm`** (last hidden state is already normed) |
 | Final-layer lens == external scores | identical to 1e-3 | TBD |
 | No entity leaks across splits | 0 leaks | TBD |
 | **ARR reproduces the paper's resistance EM** | **0.16 – 0.33** | **TBD** |
@@ -131,9 +133,17 @@ and belongs in this section prominently.
 
 ### Instrument check
 
-Ran before capture. Result: TBD. **No number below is trustworthy until this
-passes** — see DECISIONS.md §10 for why a mis-detected lens produces plausible,
-wrong numbers rather than an error.
+Ran before capture. **Result: PASS** — convention `post_norm`, reconstruction error
+0.0625 (half a bf16 ULP, i.e. the arithmetic floor), conventions separated by 89.5×,
+top-64 token order reproduced exactly. See DECISIONS.md §10 for why a mis-detected
+lens produces plausible, wrong numbers rather than an error.
+
+The first attempt at this check *failed*, on a tolerance of 2e-2 that was below what
+bf16 can represent at these logit magnitudes. That was a fault in the check, not in
+the lens; DECISIONS.md §10 records the diagnosis and the replacement criterion. Worth
+noting for the write-up: the guardrail behaved correctly in the sense that mattered —
+it stopped the pipeline before any data was captured, rather than letting a
+half-verified instrument through.
 
 ### Knowledge scores
 

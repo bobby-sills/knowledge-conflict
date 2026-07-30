@@ -9,8 +9,10 @@ Five tests, run in order, each with a kill criterion fixed in advance. If one
 fires, the pipeline stops. Results go in [`RESULTS.md`](RESULTS.md); every
 judgement call the spec left open is recorded in [`DECISIONS.md`](DECISIONS.md).
 
-**Status: built, not yet run.** No model has been executed. 225 tests pass locally
-without a GPU; the model-touching stages need a Colab session (see below).
+**Status: running.** Test 0 (fact set + prior screening) and the logit-lens
+instrument check are done on `Meta-Llama-3-8B-Instruct` on an A100-40GB; capture and
+Tests 1–4 are outstanding. 278 tests pass without a GPU, plus 40 slow tests against a
+real model. The model-touching stages need a Colab session (see below).
 
 ---
 
@@ -48,7 +50,7 @@ will not hold it with room for activations. Use an **A100 or L4**. Set
 ## Check the plumbing before spending a GPU session
 
 ```bash
-pytest -q                                   # 225 tests, no GPU, no model
+pytest -q                                   # 278 tests, no GPU, no model
 pytest tests/test_torch_paths.py --run-slow -q   # loads a tiny real model
 python -m pilot.cli smoke --model gpt2 --facts 24  # whole pipeline, tiny model
 ```
@@ -82,7 +84,7 @@ pilot/
   figures.py       every plot the spec's Report sections name
   timing.py        two-pass overhead measurement
   stages/          one CLI entry point per stage, idempotent and resumable
-tests/             225 tests; the torch ones skip without --run-slow
+tests/             278 fast tests + 40 slow ones needing --run-slow
 ```
 
 ## The pipeline
@@ -118,7 +120,11 @@ The spec's guardrails are enforced in code where prose would not enforce itself:
   the logit lens cannot reproduce the model's own final-layer logits. Stage 02 runs
   it before capturing a single fact. In HF Llama the last hidden state is *already*
   normed, and double-normalising produces plausible wrong numbers rather than an
-  error; see DECISIONS.md §10.
+  error; see DECISIONS.md §10. Measured on the real model: convention `post_norm`,
+  reconstruction error **half a bf16 ULP** (the arithmetic floor), the wrong
+  convention **89.5×** worse. The tolerance is derived from the compute dtype, not
+  hardcoded — an absolute logit tolerance is meaningless across dtypes, and the first
+  run of this check died on one that bf16 could not satisfy.
 - **Everything is logged on the first pass** — Tests 2 and 4 are re-analyses of
   saved data. `records.py` and `decoding_eval.py` import no torch so that re-analysis
   does not require the capture's environment.

@@ -20,7 +20,7 @@ without a GPU; the model-touching stages need a Colab session (see below).
 # Cell 1 — mount Drive and get the code there, so a dead session costs nothing
 from google.colab import drive; drive.mount('/content/drive')
 %cd /content/drive/MyDrive
-!git clone <this repo> knowledge-conflict || (cd knowledge-conflict && git pull)
+!git clone https://github.com/bobby-sills/knowledge-conflict || (cd knowledge-conflict && git pull)
 %cd knowledge-conflict
 !pip install -q -r requirements.txt
 ```

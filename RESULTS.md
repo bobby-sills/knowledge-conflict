@@ -74,23 +74,40 @@ extrapolation variant, not Eq. 5's pure blend — recorded in DECISIONS.md §11,
 
 ### Prior calibration
 
+600 facts screened, 8 closed-book samples each at T=0.7.
+
 | | Count | Fraction |
 |---|---|---|
-| prior correct (≥ 6/8) | TBD | TBD |
-| prior wrong (0/8) | TBD | TBD |
-| ambiguous (1-5/8) | TBD | TBD |
+| prior correct (≥ 6/8) | 141 | 23.5% |
+| prior wrong (0/8) | 401 | 66.8% |
+| ambiguous (1-5/8) | 58 | 9.7% |
 
-**Ambiguous fraction: TBD.** If this exceeds 50%, the 6/8 and 0/8 thresholds are
-wrong for this model rather than the model being uncertain — record it in
-DECISIONS.md §1.6 and raise it. Do not retune silently.
+**Ambiguous fraction: 9.7%.** Well under the 50% flag, so the 6/8 and 0/8 thresholds
+hold up for this model and needed no adjustment. The distribution is strongly
+bimodal — the model either knows a PopQA long-tail fact or has no idea, and rarely
+sits in between. That is a convenient property and not one we assumed.
+
+The asymmetry is the other way from what the pilot would prefer: the prior is *wrong*
+on two thirds of the set. PopQA is deliberately long-tail, so this is expected, but it
+means correction cases are abundant and resistance cases are the scarce resource.
 
 ### Conflict states
 
+683 conflict cases from 600 facts. Prior-correct facts yield two cases each
+(resistance and agreement); prior-wrong facts yield one (correction); ambiguous facts
+are excluded.
+
 | State | Prior | Context | Cases |
 |---|---|---|---|
-| correction | wrong | faithful | TBD |
-| resistance | correct | corrupted | TBD |
-| agreement | correct | faithful | TBD |
+| correction | wrong | faithful | 401 |
+| resistance | correct | corrupted | 141 |
+| agreement | correct | faithful | 141 |
+
+**141 resistance cases** clears the 100-case floor, but only just. Test 2's AUC on the
+resistance side will have wide intervals, so report the width, not the point. If a
+result comes back promising, the cheapest way to tighten it is more facts — and
+because the prior is wrong 67% of the time, scaling the fact set buys resistance cases
+at roughly one per four facts screened.
 
 ![state counts](figures/test0_states.png)
 
@@ -98,13 +115,29 @@ DECISIONS.md §1.6 and raise it. Do not retune silently.
 
 ![popularity by state](figures/test0_popularity.png)
 
-Median log10 subject pageviews: correction TBD, resistance TBD, agreement TBD.
+Median log10 subject pageviews: correction **2.84**, resistance **3.73**, agreement
+**3.73**.
 
-**Why this matters:** if resistance cases are systematically more popular entities
-than correction cases, log-popularity alone separates Test 2's binary, and any
-popularity-correlated signal inherits a good AUC without carrying information about
-the model's internal state. Test 2 includes log-popularity as an explicit control
-for exactly this.
+**This confound is real, and it is large.** Resistance and agreement share a median by
+construction — both are built from the same 141 prior-correct facts — so the
+comparison that matters is correction (2.84) against resistance (3.73): a gap of
+**0.89 decades**, nearly an order of magnitude in pageviews.
+
+That is not a nuisance, it is close to a tautology: the model knows popular entities,
+and "the model knows it" is exactly what separates the prior-correct states from the
+prior-wrong one. So log-popularity is expected to be a *strong* predictor of Test 2's
+binary while carrying no information whatsoever about the model's internal state.
+
+Two consequences for how Test 2 must be read:
+
+1. **Beating chance is meaningless here.** The bar an internal signal has to clear is
+   log-popularity's AUC, not 0.5. `signals.py` carries log-popularity as one of the
+   seven external predictors precisely so this shows up in the same table.
+2. **A high-AUC internal signal is not yet evidence.** If an internal signal and
+   log-popularity have correlated errors, the internal signal may be reading
+   popularity off the residual stream rather than reading the conflict. The
+   error-correlation matrix is the check, and on this fact set it is load-bearing
+   rather than a formality.
 
 ### Cross-check against TriState-Bench
 

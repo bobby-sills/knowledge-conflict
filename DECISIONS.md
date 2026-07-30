@@ -524,7 +524,17 @@ against. Reviewers will ask.
 
 ## 12. Results to be recorded here after running — **[open]**
 
-- [ ] Ambiguous fraction from stage 01, and whether 6/8 and 0/8 held up (§1.6).
+- [x] Ambiguous fraction from stage 01, and whether 6/8 and 0/8 held up (§1.6).
+      **9.7% (58/600). They held up — no adjustment made.** Labels: 401 wrong, 141
+      correct, 58 ambiguous → 683 cases (401 correction, 141 resistance, 141
+      agreement). The prior is wrong on 67% of PopQA, so resistance is the scarce
+      state at 141 cases — over the 100-case floor, but Test 2's intervals will be
+      wide and must be reported as widths.
+      **Also measured, and it matters:** median log10 pageviews are 2.84 for
+      correction against 3.73 for resistance — a 0.89-decade gap. Log-popularity will
+      therefore predict Test 2's binary well while saying nothing about internal
+      state, so the bar for an internal signal is log-popularity's AUC, not chance.
+      See RESULTS.md "Entity popularity by state".
 - [ ] Agreement rate between our prior labels and TriState-Bench's GAPS labels.
 - [x] `lens_check.json`: which convention the lens found, and the reconstruction error.
       **`post_norm`, err 0.0625 = 0.50 ULP of bf16, 89.5× separation, top-64 order

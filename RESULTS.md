@@ -1,11 +1,29 @@
 # RESULTS
 
-## 🔴 Verdict: no-go. Test 1's kill criterion fired.
+## 🟠 Verdict: the *logit-lens route* is dead. The project premise is untested.
+
+Test 1's kill criterion fired, and the pipeline stopped as specified.
 
 **Internal and external answers diverge on half the fact set — but where they diverge,
 the output distribution is right more often than the internal state (24.0% vs 19.8%).**
-The premise of the project is that the residual stream is the better arbiter. On
-Llama-3-8B-Instruct over 600 PopQA facts, it is the worse one.
+On Llama-3-8B-Instruct over 600 PopQA facts, the training-free logit lens is the *worse*
+arbiter.
+
+**But that is not a test of the claim this project is built on.** Inside-Out (arXiv
+2503.15299), the source of the 40% internal-vs-external gap the whole premise rests on,
+does not use a logit lens — it uses a **trained linear probe that ingests the candidate
+answer**. The spec substituted the lens for cheapness (`PILOT_SPEC.md:124-127`, "requires
+no training and no labels, which is why we start here") and then attached to it a kill
+criterion whose stated meaning is "the whole project premise fails". That inference does
+not hold: we ran a different instrument, and it lost. See §14 of
+[DECISIONS.md](DECISIONS.md) for the side-by-side.
+
+So the honest reading is two-part:
+
+- **Settled:** the cheap, training-free route does not work. Worth knowing, and it was
+  the right thing to try first.
+- **Untested:** whether the model's internal state carries a better answer at all. The
+  deciding experiment is Test 1 with Inside-Out's actual probe.
 
 Tests 2, 3 and 4 were not run. No threshold was adjusted and no variant was tried
 after the result was seen. The `report` split is still locked and unexamined.
@@ -477,40 +495,59 @@ The five questions the pilot exists to answer:
 2. **When they diverge, is the internal one right?** — **No.** Internal 19.8%, external
    24.0%. And on 56.2% of divergent facts neither is right, which is the more
    informative number: divergence tracks *ignorance*, not a suppressed correct answer.
+   **Caveat that governs (1) and (2):** "internal" here means the training-free logit
+   lens, not Inside-Out's trained probe. See §14 of DECISIONS.md.
 3. **Does an internal signal predict the resist-or-correct decision better than the
    output-distribution signals the field uses?** — **Not run.** Test 1 is the
    precondition; there is no reason to price an arbiter that loses to what it replaces.
 4. **What is the ceiling if the signal were perfect?** — Not run.
 5. **Is any apparent gain per-question adaptivity, or a global rescale?** — Not run.
 
-### Recommendation: do not build the full project as specified.
+### Recommendation: do not build the project on the logit lens. Run one more experiment before abandoning the direction.
 
-The specific claim the four-month project rests on — that the residual stream holds a
-better answer than the output layer, which contrastive decoding then fails to exploit —
-is false on this model and fact set, in the direction that matters. The output
-distribution is not a degraded view of a cleaner internal state; on the facts where the
-two disagree it is the *better* view.
+**What is settled.** The training-free route fails. A logit lens over the residual stream
+is a worse arbiter than the output distribution it was supposed to replace, and no amount
+of downstream machinery — Tests 2, 3 and 4, the τ family, the routers — rescues a signal
+that loses at step one. Building the four-month project on this instrument would have
+been a mistake, and the pilot caught it in a day.
 
-Stated plainly and without hedging it into a maybe: **this saves roughly four months.**
+**What is not settled, and this is the correction that matters.** The premise was never
+that the *logit lens* beats the output distribution. It was that the model's internal
+state does, sourced from Inside-Out's 40% gap — and Inside-Out gets that gap from a
+**trained linear probe on `h(q,a)` that ingests the candidate answer**. We measured
+something else. The pilot as specified could not have decided this question, because the
+instrument in Test 1 was not the instrument the premise rests on. That is a flaw in the
+spec's inference, not in the run.
 
-**What the pilot did *not* rule out**, stated precisely so it is not overread:
+**The deciding experiment**, now well specified because the paper is explicit about it:
 
-- That divergence is real and large (50.2%). That part of the premise held.
-- That a *trained probe* could beat the output distribution. We tested the untrained
-  logit lens, which the spec chose deliberately as the cheap first look. A probe
-  trained on the residual stream is a different instrument and this is not evidence
-  about it — though note the ceiling it would have to clear: on 56% of divergent facts
-  the gold answer is not top-1 in either reading, so the headroom a probe is competing
-  for is smaller than the 50% divergence rate suggests.
-- That the result holds beyond Llama-3-8B-Instruct, PopQA long-tail facts, and
-  synthetic single-claim documents. All three are narrow, and the documents in
-  particular are the limitation flagged in Test 0.
-- That first-token scoring is the right granularity. It is what the lens can see, so
-  the comparison is apples-to-apples, but a full-span internal score is not something
-  a single-position lens can provide.
+1. Capture the hidden state `h(q, a)` for each (question, candidate) pair — the sequence
+   where the model is simulated generating `a` given `q`. This is a **new capture**, not a
+   re-analysis: stage 02 stored residuals at the final *question* token, and the full-span
+   pass kept only mean log-probs, not hidden states. It is ~4,900 short forwards, minutes
+   on the A100.
+2. Train a per-layer logistic regression, pick the layer on the `layer` split. The
+   training data largely exists — stage 01's 8 closed-book samples per fact already supply
+   correct greedy answers and incorrect high-temperature ones, which is Inside-Out's
+   "knowledge-aware" recipe, and splits are already entity-disjoint.
+3. Fix a kill criterion **before** looking. It is a different experiment with a different
+   premise, not a retry of this one.
 
-**If one thing were to be re-run before abandoning the direction**, it is Test 1 with a
-trained linear probe in place of the logit lens, on the same captured residuals — the
-capture is on disk, the `report` split is still clean, and it is hours rather than
-months. That is a different experiment with a different premise, not a retry of this
-one, and it should get its own kill criterion fixed in advance.
+Hours, not months. If the probe also loses, the direction is genuinely dead and that
+conclusion will be worth something.
+
+**What remains unruled-out either way**, stated so it is not overread:
+
+- Divergence is real and large (50.2%). That part of the premise held.
+- The ceiling a probe is competing for is **smaller than 50%**: on 56.2% of divergent
+  facts the gold is top-1 in neither reading, so the exploitable headroom is the ~44%
+  where one of them is right.
+- Nothing here generalises past Llama-3-8B-Instruct, PopQA's long tail, and synthetic
+  single-claim documents. Inside-Out used EntityQuestions on four relations chosen to be
+  *hard to guess and unambiguous*, and a 1,001-answer model-sampled candidate set with the
+  gold inserted when unsampled (64% of questions). Our 8 popularity-matched distractors
+  are a much easier discrimination, which if anything should have *flattered* the lens.
+- Our external baseline was first-token log-prob only. Inside-Out's externals are
+  full-span `P(a|q)`, length-normalised `P_norm`, and a `P(True)` verification prompt —
+  stronger baselines than ours. Ours won anyway, which makes the lens's loss harder to
+  explain away as an unfair comparison.

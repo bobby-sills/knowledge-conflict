@@ -588,7 +588,76 @@ the two readings disagree in the noise. That reframes the 50.2% from evidence *f
 premise into evidence about the fact set, and it is the number to lead with when
 explaining the outcome to someone who expects a high divergence rate to be encouraging.
 
-What was **not** ruled out is set out at the end of RESULTS.md — chiefly that a
-*trained probe* on the same residuals is a different instrument and this is not evidence
-about it. That would be a new experiment needing its own kill criterion fixed in
-advance, not a retry of this one.
+What was **not** ruled out is set out at the end of RESULTS.md, and §14 below is the
+reason it matters more than a footnote: Test 1 did not use the instrument the project's
+premise is sourced from.
+
+---
+
+## 14. Test 1 measured a different instrument than Inside-Out's — **[resolved by reading the paper]**
+
+Read arXiv 2503.15299 (COLM 2025) directly after the Test 1 null, to check what its
+internal scoring function actually is. **It is a trained linear probe, not a logit lens.**
+The paper never uses a logit lens; the string "lens" appears once, in an unrelated
+citation title.
+
+§3.2, verbatim:
+
+> "our probe is a linear classifier, trained with a logistic regression objective, that
+> receives as input M's hidden state `h_M(q, a)`, obtained by **encoding q and a**, and
+> classifies a as correct or incorrect. We then use its output probability, representing
+> the likelihood that a is correct, as `T_M`."
+
+And §A.5: the (q, a) sequence is built by "simulating a sequence where M generates a when
+prompted with q"; one probe per layer, layer chosen on a development set.
+
+| | Inside-Out `T_M` | Our Test 1 internal score |
+|---|---|---|
+| Form | **discriminative** — takes (q, a), returns P(a correct) | **generative** — reads the model's own next-token distribution |
+| Position read | hidden state of a sequence containing `a` | residual stream at the final *question* token |
+| Sees the candidate? | **yes** | **no** |
+| Trained? | yes — logistic regression on 2,000 questions | no, training-free by construction |
+| Layer choice | best on dev | best on our `layer` split (same idea) |
+
+Other differences, all of which make our setup the *easier* one for the lens:
+
+- **Their externals are stronger than ours.** Full-span `P(a|q)`, length-normalised
+  `P_norm(a|q)`, and `P(True)` verification prompting. Ours is first-answer-token log-prob
+  alone (§3). Ours still beat our internal score, so the lens's loss cannot be dismissed
+  as an unfairly strong baseline.
+- **Their candidate set is far harder.** Greedy answer + 1,000 samples at T=1, LLM-judged
+  for correctness, with the gold inserted manually when unsampled — which happens in 64%
+  of questions. Ours is 1 gold + 8 popularity-matched distractors (§2).
+- **Their data is chosen for unambiguity.** EntityQuestions, four relations picked as
+  "hard to guess" with "a single, unambiguous answer" (P26, P176, P264, P50). Ours is
+  PopQA across 16 relations.
+- **They call their own result a lower bound**: "demonstrating it with a single internal
+  function is sufficient. Consequently, our results should be interpreted as a lower
+  bound." A weaker internal function scoring worse is entirely consistent with their paper.
+- **The model is not a difference.** Llama-3-8B-Instruct is one of their three.
+- Public code: `github.com/zorikg/inside-out`.
+- The `K` definition matches ours exactly — per-question fraction of (correct, incorrect)
+  pairs ranked correctly. They note it is deliberately *not* dataset-level AUC-ROC, which
+  is the convention we followed too (§6).
+
+One consistency worth recording: their per-layer probe accuracy "improve[s] and then
+mostly stabilize[s] in the final two-thirds of the network, typically starting around
+layers 11–12 out of 32", with "a tiny drop in the last layers". Our logit-lens curve has
+the same shape — flat to ~14, rising to a peak at 28, dipping at 31–32. The layer geometry
+replicates; what fails is reading the answer off it without training.
+
+**What this changes.** The kill criterion fired and the pipeline stopped, correctly. But
+the spec's *interpretation* of a fired Test 1 — "the internals carry nothing the output
+distribution lacks, and the whole project premise fails" (`PILOT_SPEC.md:144-146`) — does
+not follow from what was run. The premise is sourced from a trained probe; we tested a
+training-free lens. The lens route is dead; the premise is untested. RESULTS.md now says
+this and names the deciding experiment.
+
+**The generalisable lesson, and it is the same one as §1.** There, verifying the baseline
+against a *repo* instead of the paper produced a wrong comparator. Here, taking the
+internal-scoring method from the spec's one-paragraph summary instead of the paper
+produced a wrong instrument — and unlike §1 it survived all the way to a headline
+conclusion, because nothing downstream could detect it. The spec was not wrong to
+substitute a cheap instrument; it was wrong to attach the premise's kill criterion to it,
+and that should have been caught by reading the source before building. **Read the paper
+before designing the test that rests on it, not after the test returns a surprise.**

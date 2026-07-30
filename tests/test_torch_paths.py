@@ -277,9 +277,18 @@ class TestLensAgainstRealModel:
 
     def test_an_impossible_tolerance_still_fails_loudly(self, tiny_bundle):
         # The magnitude check must remain capable of failing when overridden.
+        #
+        # In float32 this fixture reconstructs *bit-exactly* (err == 0), so no
+        # non-negative tolerance is impossible and tol=0.0 legitimately passes.
+        # That is the mirror image of the bf16 bug: there the floor was 0.0625 and
+        # a tolerance of 0.02 could never be met. Derive the impossible value from
+        # the observed error rather than assuming either regime.
         from pilot.lens import calibrate
+        r = calibrate(tiny_bundle)
+        err = min(r["err_direct"], r["err_after_norm"])
+        impossible = err / 2.0 if err > 0.0 else -1.0
         with pytest.raises(RuntimeError, match="magnitude"):
-            calibrate(tiny_bundle, tol=0.0)
+            calibrate(tiny_bundle, tol=impossible)
 
     def test_demanding_absurd_discrimination_fails(self, tiny_bundle):
         # The discrimination check must remain capable of failing.

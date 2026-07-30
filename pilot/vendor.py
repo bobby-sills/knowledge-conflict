@@ -1,5 +1,5 @@
 """Bridge to the published baselines. We do not reimplement CAD/AdaCAD/CoCoA/
-COIECD/GRD — the spec says use the authors' repo, and a reimplementation is a
+COIECD/ARR — the spec says use the authors' repo, and a reimplementation is a
 reviewer's first target.
 
 Repo: github.com/keith-Jiang/Gated-Reversal-Decoding (renamed from
@@ -20,10 +20,19 @@ What we do NOT take: their `inference.py` / shell harness, which is built around
 a dual-GPU launcher and their own JSONL layout. We drive the method objects
 directly.
 
-Note on the spec's "ARR": no method by that name exists in the repo, and no
-paper we can find defines it. The strongest published method there is **GRD**
-(Gated Reversal Decoding), which is what the Test 3 kill criterion is compared
-against. Flagged in DECISIONS.md.
+**Why this pins an old commit.** ARR (Adaptive Regime Routing) is the method
+arXiv 2606.10298 publishes. On 2026-07-29 the authors deleted `methods/arr.py`,
+added `methods/grd.py` (Gated Reversal Decoding), and renamed the repo — so HEAD
+does not contain the paper's method. GRD is a different algorithm, not a rename:
+
+    ARR  stateless, per step:  tau = 1 + s  if p_ctx_max > p_pri_max else 1 - s
+         with s = JSD/log2 clamped to [0,1]. Routes across the tau = 1 boundary.
+
+    GRD  stateful: locks the trusted branch at the first conflict step, then uses
+         tau = (1 - lambda) * tau_star with lambda = 0.75 and tau_star in (0,1),
+         so tau <= 0.25. Never extrapolates.
+
+We pin the last commit with ARR. See DECISIONS.md §1.2.
 """
 
 from __future__ import annotations
@@ -155,31 +164,104 @@ def substring_any(prediction: str, golds) -> bool:
 def build_methods(names=config.VENDOR_METHODS, **kwargs) -> dict:
     """Instantiate the vendored method objects.
 
-    Returns name -> object. Everything except `grd` exposes
-    `get_next_token_logits(logits_ctx, logits_prior)`; `grd` is stateful and
-    exposes `select_next_token(...)` plus `reset()`. `powerfamily.generate`
-    handles both shapes.
+    Returns name -> object, each exposing
+    `get_next_token_logits(logits_ctx, logits_prior)`. `powerfamily.generate` also
+    handles the stateful `select_next_token` / `reset` shape, which is what GRD uses
+    at HEAD, but no method here needs it.
+
+    `greedy` and `greedy_no_ctx` are deliberately absent: they are PowerFamily(1.0)
+    and PowerFamily(0.0), already computed by the tau sweep.
     """
     from methods.adacad import AdaCADDecoding      # type: ignore
+    from methods.arr import ARRDecoding            # type: ignore
     from methods.cad import CADDecoding            # type: ignore
     from methods.cocoa import CoCoADecoding        # type: ignore
     from methods.coiecd import COIECDDecoding      # type: ignore
-    from methods.greedy import GreedyDecoding      # type: ignore
-    from methods.greedy_no_ctx import GreedyNoCtxDecoding  # type: ignore
-    from methods.grd import GRDDecoding            # type: ignore
 
     factories = {
-        "greedy": lambda: GreedyDecoding(),
-        "greedy_no_ctx": lambda: GreedyNoCtxDecoding(),
         "cad": lambda: CADDecoding(alpha=kwargs.get("cad_alpha", 0.5)),
         "adacad": lambda: AdaCADDecoding(),
-        "cocoa": lambda: CoCoADecoding(),
+        "cocoa": lambda: CoCoADecoding(
+            global_alpha=kwargs.get("cocoa_alpha", config.COCOA_ALPHA),
+            gamma=kwargs.get("cocoa_gamma", config.COCOA_GAMMA)),
         "coiecd": lambda: COIECDDecoding(),
-        "grd": lambda: GRDDecoding(grd_lambda=kwargs.get("grd_lambda", 0.75)),
+        "arr": lambda: ARRDecoding(),
     }
     out = {}
     for name in names:
         if name not in factories:
-            raise KeyError(f"unknown vendored method {name!r}")
+            raise KeyError(
+                f"unknown vendored method {name!r}. Available: "
+                f"{sorted(factories)}. Note that 'grd' exists only at HEAD "
+                f"({config.VENDOR_HEAD_WITH_GRD}), which does not contain ARR.")
         out[name] = factories[name]()
+    return out
+
+
+# --------------------------------------------------------------------------- #
+# Which regime is a method actually in? Measured, not read off its name.
+# --------------------------------------------------------------------------- #
+
+def effective_tau(method, logits_ctx, logits_prior) -> float:
+    """The tau a method is *really* operating at, recovered from its output.
+
+    Every method in this family is affine in log space:
+
+        adjusted = (1 - tau) * log p_pri + tau * log p_ctx + c
+
+    so tau is recoverable by projecting `adjusted - log p_pri` onto
+    `log p_ctx - log p_pri`. Exact for CAD, AdaCAD, CoCoA and the power family;
+    for a method that is not affine in log space the residual will be large, which
+    is itself the useful answer.
+
+    This exists because a method's self-reported tau cannot be trusted. The repo's
+    `CoCoADecoding.get_tau()` returns `global_alpha` (0.5) while the method actually
+    operates at `alpha + gamma` (1.5) — the difference between interpolation and
+    extrapolation, i.e. the entire distinction the paper is about. Rather than
+    trusting either the name or the accessor, measure.
+
+    **Both vectors are mean-centred before projecting**, which fits the intercept
+    implicitly. The constant `c` is not incidental: normalising leaves one, and CAD
+    and AdaCAD combine *raw* logits rather than log-probabilities, so their output
+    differs from the log-space form by the partition functions. Projecting without
+    centring would bias tau by `c * sum(basis) / ||basis||^2`, which is not zero over
+    a real vocabulary — the estimate would look plausible and be wrong, which is the
+    failure mode this whole module is meant to prevent.
+
+    The arithmetic lives in `regime.py` (numpy, no torch) so it is covered by the
+    local test suite rather than only by the tests that need a GPU.
+
+    Returns the fitted tau; see `regime_report` for the residual.
+    """
+    return regime_report(method, logits_ctx, logits_prior)["effective_tau"]
+
+
+def _to_logprob_arrays(method, logits_ctx, logits_prior):
+    import torch
+    import torch.nn.functional as F
+
+    with torch.no_grad():
+        adjusted = method.get_next_token_logits(logits_ctx, logits_prior)
+        return (adjusted.float().flatten().cpu().numpy(),
+                F.log_softmax(logits_ctx.float(), dim=-1).flatten().cpu().numpy(),
+                F.log_softmax(logits_prior.float(), dim=-1).flatten().cpu().numpy())
+
+
+def regime_report(method, logits_ctx, logits_prior) -> dict:
+    """Fitted tau, the fit residual, and the regime that implies."""
+    from .regime import describe
+
+    adj, lp_ctx, lp_pri = _to_logprob_arrays(method, logits_ctx, logits_prior)
+
+    reported = None
+    if hasattr(method, "get_tau"):
+        try:
+            reported = method.get_tau(logits_ctx, logits_prior)
+        except TypeError:
+            reported = method.get_tau()
+        if reported is not None:
+            reported = float(reported)
+
+    out = describe(adj, lp_ctx, lp_pri, reported_tau=reported)
+    out["method"] = getattr(method, "name", type(method).__name__)
     return out

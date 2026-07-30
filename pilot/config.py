@@ -170,8 +170,38 @@ GEN_MAX_NEW_TOKENS = 24
 ORACLE_TAU_INIT = {"correction": 1.5, "resistance": 0.3, "agreement": 1.0}
 
 VENDOR_REPO = "https://github.com/keith-Jiang/Gated-Reversal-Decoding"
-VENDOR_COMMIT = "581a4d59c4759fe513d099a8eee10b9849aab6a2"   # main @ 2026-07-29
-VENDOR_METHODS = ("greedy", "greedy_no_ctx", "cad", "adacad", "cocoa", "coiecd", "grd")
+
+# Pinned to the last commit that contains `methods/arr.py` — **not** to HEAD.
+#
+# ARR (Adaptive Regime Routing) is the method arXiv 2606.10298 actually publishes;
+# its abstract credits ARR with lifting resistance EM "from below 6 to 16--33". On
+# 2026-07-29 the authors replaced `arr.py` with `grd.py` (Gated Reversal Decoding)
+# and renamed the repo, so HEAD no longer contains the paper's method at all. GRD is
+# a *different algorithm*, not a rename: ARR is stateless and routes per step
+# between extrapolation and interpolation, while GRD is stateful and never
+# extrapolates. Comparing against HEAD would compare against an unpublished
+# successor. See DECISIONS.md §1.2.
+VENDOR_COMMIT = "320d88bc"          # last commit containing methods/arr.py
+VENDOR_COMMIT_DATE = "2026-07-09"
+VENDOR_HEAD_WITH_GRD = "581a4d59"   # recorded, deliberately not used
+
+# `greedy` and `greedy_no_ctx` are omitted: they are exactly PowerFamily(1.0) and
+# PowerFamily(0.0), which the tau sweep already covers, so vendoring them would add
+# two more code paths computing numbers we already have.
+VENDOR_METHODS = ("cad", "adacad", "cocoa", "coiecd", "arr")
+
+# The paper's reported range for ARR's resistance EM. Not a threshold we invented —
+# a reproduction target. If our ARR run lands far outside it, we have the wrong
+# method or a broken config, whatever the class is called, and Test 3's kill
+# criterion is measured against a number that does not mean what we think.
+ARR_RESISTANCE_EM_TARGET = (0.16, 0.33)
+
+# CoCoA's effective exponent is alpha + gamma, so the repo's defaults put it at
+# tau = 1.5 (extrapolation) — Table 1's `CoCoA*`, not Eq. 5's pure blend. Setting
+# gamma = 0.0 recovers Eq. 5 at tau = alpha. We run the repo's default so our
+# numbers match their table, and report both readings. See DECISIONS.md §11.
+COCOA_ALPHA = 0.5
+COCOA_GAMMA = 1.0
 
 
 # --------------------------------------------------------------------------- #
@@ -237,5 +267,8 @@ def snapshot() -> dict:
         "renyi_alpha": RENYI_ALPHA,
         "tau_grid": [TAU_GRID[0], TAU_GRID[-1], len(TAU_GRID)],
         "vendor_commit": VENDOR_COMMIT,
+        "vendor_methods": list(VENDOR_METHODS),
+        "cocoa": {"alpha": COCOA_ALPHA, "gamma": COCOA_GAMMA,
+                  "effective_tau": COCOA_ALPHA + COCOA_GAMMA},
         "kill": asdict(KILL),
     }

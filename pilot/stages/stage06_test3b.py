@@ -6,7 +6,9 @@ Three things run here:
    completes, so this is resumable at generation granularity — which matters,
    because a 51-point sweep over a few thousand cases is the longest-running
    stage in the pilot.
-2. The vendored baselines (CAD, AdaCAD, CoCoA, COIECD, GRD) on the same cases.
+2. The vendored baselines (CAD, AdaCAD, CoCoA, COIECD, ARR) on the same cases,
+   each first probed for the tau regime it is *actually* in rather than the one its
+   name or its own `get_tau()` claims.
 3. Three-way oracle routing, assembled *from the sweep* rather than regenerated.
    Selecting the row already generated at each state's chosen tau is provably the
    same as regenerating, and it guarantees the oracle cannot see anything the
@@ -30,6 +32,33 @@ COARSE_GRID = tuple(round(0.25 * i, 3) for i in range(0, 11))    # 0.00 .. 2.50
 
 def _gen_path():
     return config.PATHS.results / "test3b_generations.jsonl"
+
+
+def _probe_regimes(bundle, vendored, probe_cases) -> dict:
+    """Measure each baseline's effective tau on a real conflict case."""
+    from ..documents import context_prompt, prior_prompt
+    from ..model import forward_last
+    from ..vendor import regime_report
+
+    if not probe_cases:
+        return {}
+    case = probe_cases[0]
+    fact = case["_fact"]
+    out_ctx = forward_last(bundle, [context_prompt(fact, case["document"],
+                                                   bundle.tokenizer)],
+                           want_hidden=False)
+    out_pri = forward_last(bundle, [prior_prompt(fact, bundle.tokenizer)],
+                           want_hidden=False)
+    reports = {}
+    for name, method in vendored.items():
+        try:
+            reports[name] = regime_report(method, out_ctx["logits"],
+                                          out_pri["logits"])
+        except Exception as exc:      # a baseline we cannot probe is not fatal
+            reports[name] = {"method": name, "error": f"{type(exc).__name__}: {exc}",
+                             "effective_tau": float("nan"), "reported_tau": None,
+                             "regime": "unprobed", "self_report_matches": False}
+    return reports
 
 
 def _cases_with_facts(paths, splits, limit=None):
@@ -102,6 +131,18 @@ def run(splits=("train", "layer"), grid: str = "coarse",
 
         # ---- the baselines ------------------------------------------------ #
         vendored = build_methods(methods)
+
+        # Before running them, measure which regime each is actually in. A method's
+        # name and its self-reported tau can both be wrong (the repo's CoCoA reports
+        # 0.5 while operating at 1.5), and the interpolation/extrapolation
+        # distinction is the paper's whole subject.
+        regimes = _probe_regimes(bundle, vendored, cases[:1])
+        box["regimes"] = regimes
+        for r in regimes.values():
+            flag = "" if r["self_report_matches"] else "   <- self-report disagrees"
+            print(f"[06] {r['method']:<10} effective tau ~ {r['effective_tau']:+.3f} "
+                  f"({r['regime']}), reports {r['reported_tau']}{flag}")
+
         for name in methods:
             todo = [c for c in cases if (name, None, c["case_id"]) not in done]
             if todo:
@@ -130,12 +171,36 @@ def run(splits=("train", "layer"), grid: str = "coarse",
         oracle = powerfamily.evaluate_predictions(oracle_rows)
         kill = powerfamily.check_test3_kill(oracle, baselines)
 
+        # ---- reproduction check on the published comparator ---------------- #
+        # The paper reports ARR lifting resistance EM to 16-33. If our run lands far
+        # outside that, we have the wrong method or a broken config regardless of
+        # what the class is called — and Test 3's kill criterion is measured
+        # *relative to* this number, so a wrong baseline silently moves the gate.
+        arr_check = None
+        if "arr" in baselines:
+            lo, hi = config.ARR_RESISTANCE_EM_TARGET
+            got = baselines["arr"].get("resistance", float("nan"))
+            in_range = bool(lo <= got <= hi) if got == got else False
+            arr_check = {"resistance_em": got, "target": [lo, hi],
+                         "in_range": in_range}
+            print(f"[06] ARR resistance EM {got:.3f}; paper reports "
+                  f"{lo:.2f}-{hi:.2f} -> {'ok' if in_range else 'OUT OF RANGE'}")
+            if not in_range:
+                print("[06] FLAG: ARR does not reproduce the paper's resistance EM. "
+                      "Test 3's kill criterion is relative to this baseline, so "
+                      "resolve it before believing the gate. Check the prompt style "
+                      "(--prompt-style raw for their format), the fact set, and the "
+                      "regime probe above.")
+
         best_fixed_tau = max(sweep, key=lambda t: sweep[t]["overall"]) if sweep else None
         result = {
             "splits": list(splits), "grid": grid, "taus": list(taus),
             "n_cases": len(cases),
             "vendored_metrics": using_vendored_metrics(),
             "vendor_root": str(vendor_root),
+            "vendor_commit": config.VENDOR_COMMIT,
+            "regimes": regimes,
+            "arr_reproduction": arr_check,
             "sweep": {str(t): s for t, s in sweep.items()},
             "baselines": baselines,
             "oracle_tau_by_state": tuned["tau_by_state"],

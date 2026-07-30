@@ -96,8 +96,9 @@ def check_test3_kill(oracle: Mapping[str, float],
     """Test 3's kill criterion: does oracle routing clear the best baseline?
 
     "Barely beats" is made concrete as `min_oracle_gain_over_best_baseline_em` on
-    overall EM. The strongest published comparator in the vendored repo is GRD; the
-    spec's "ARR" does not exist there (see DECISIONS.md).
+    overall EM, against the strongest baseline actually run — which should include
+    **ARR**, the method arXiv 2606.10298 publishes and the one the spec names. See
+    DECISIONS.md §1.2 for why the vendored pin is not HEAD.
     """
     if not baselines:
         return {"test": "test3", "fired": True, "reasons": ["no baselines run"]}

@@ -127,16 +127,24 @@ The spec's guardrails are enforced in code where prose would not enforce itself:
 
 ## Notes on the spec
 
-Three things in the spec turned out not to match reality; all are resolved in
-DECISIONS.md §1, and one needs a human decision:
+Resolved in DECISIONS.md §1:
 
 1. The baselines repo has been **renamed** to `keith-Jiang/Gated-Reversal-Decoding`.
-   Pinned at `581a4d59`.
-2. **"ARR" does not exist** in that repo and we could not find a paper defining it.
-   We took the spec to mean **GRD** (Gated Reversal Decoding), the repo's own method
-   and the strongest comparator there. **Confirm this is what was meant.**
+2. **ARR is the right comparator, and the pin is not HEAD.** ARR (Adaptive Regime
+   Routing) is what arXiv 2606.10298 publishes. On 2026-07-29 the authors deleted
+   `methods/arr.py` and replaced it with `methods/grd.py` — a *different* algorithm
+   (stateful, and it never extrapolates), not a rename. So we pin `320d88bc`, the
+   last commit containing ARR. `config.ARR_RESISTANCE_EM_TARGET` encodes the paper's
+   reported 16–33 resistance EM as a reproduction check, because Test 3's kill
+   criterion is measured *relative to* this baseline.
 3. **Inside-Out released no fact set**, so PopQA it is — which is also what Test 2's
    popularity control needs.
+
+Related: `pilot/regime.py` recovers the τ each baseline is *actually* operating at,
+because names and self-reports both lie about it. The vendored `CoCoA.get_tau()`
+reports 0.5 while the method runs at α+γ = 1.5 — the interpolation/extrapolation
+distinction the paper is about. Stage 06 prints the measured τ for every baseline.
+See DECISIONS.md §11.
 
 One bonus: the vendored repo ships **TriState-Bench prior-screened for our exact
 model** (~400 cases per conflict state). Not usable as the primary fact set — no

@@ -99,6 +99,68 @@ class TestPositionIds:
         assert int(_position_ids(mask)[0, -1]) == 1
 
 
+class TestRegimeProbeOnTensors:
+    """The torch adapter around `pilot.regime`.
+
+    The estimator's arithmetic is covered exactly, on CPU, in test_regime.py. What
+    is left to check here is the tensor plumbing: that the adapter feeds it the
+    right three vectors and passes a self-report through.
+    """
+
+    def _dists(self):
+        logits_pri = torch.tensor([[2.0, 0.0, -1.0, 0.5]])
+        logits_ctx = torch.tensor([[0.0, 2.0, -1.0, -0.5]])
+        return logits_ctx, logits_pri
+
+    @pytest.mark.parametrize("tau", [0.0, 0.3, 1.0, 1.5, 2.5])
+    def test_recovers_the_power_family_tau(self, tau):
+        from pilot.vendor import effective_tau
+        ctx, pri = self._dists()
+        assert effective_tau(PowerFamily(tau), ctx, pri) == pytest.approx(tau,
+                                                                         abs=1e-4)
+
+    def test_flags_a_disagreeing_self_report(self):
+        from pilot.vendor import regime_report
+
+        class Liar:
+            name = "liar"
+
+            def get_next_token_logits(self, lc, lp):
+                return PowerFamily(1.6).get_next_token_logits(lc, lp)
+
+            def get_tau(self, lc, lp):
+                return 0.4
+
+        ctx, pri = self._dists()
+        r = regime_report(Liar(), ctx, pri)
+        assert r["effective_tau"] == pytest.approx(1.6, abs=1e-4)
+        assert r["reported_tau"] == 0.4
+        assert r["self_report_matches"] is False
+        assert r["regime"] == "extrapolation"
+        assert r["method"] == "liar"
+
+    def test_handles_a_no_argument_get_tau(self):
+        # PowerFamily.get_tau takes *args; the adapter must cope with either shape.
+        from pilot.vendor import regime_report
+        ctx, pri = self._dists()
+        assert regime_report(PowerFamily(0.3), ctx, pri)["reported_tau"] == \
+            pytest.approx(0.3)
+
+    def test_non_affine_method_shows_a_large_residual(self):
+        from pilot.vendor import regime_report
+
+        class Nonlinear:
+            name = "nonlinear"
+
+            def get_next_token_logits(self, lc, lp):
+                return torch.tanh(lc.float()) * 6.0 - lp.float() ** 2
+
+        ctx, pri = self._dists()
+        r = regime_report(Nonlinear(), ctx, pri)
+        assert r["affine_in_log_space"] is False
+        assert r["affine_residual"] > 1e-3
+
+
 class TestRouters:
     def _case(self, case_id="c1", state="resistance"):
         return {"case_id": case_id, "state": state}

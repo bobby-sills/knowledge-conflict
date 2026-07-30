@@ -74,7 +74,7 @@ def main(argv=None) -> int:
         print(f"[smoke] test2 skipped: {exc}")
     stage05_test3a.run(splits=tuple(dev))
     stage06_test3b.run(splits=tuple(dev), grid="coarse", limit=6,
-                       methods=("greedy", "cad", "adacad", "grd"))
+                       methods=("cad", "adacad", "arr"))
     try:
         stage07_test4.run(n_shuffles=2, splits=tuple(dev), limit=6)
     except SystemExit as exc:

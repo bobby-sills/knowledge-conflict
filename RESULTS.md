@@ -37,6 +37,31 @@ succeeded.
 | Lens convention detected | `post_norm` or `pre_norm` | TBD |
 | Final-layer lens == external scores | identical to 1e-3 | TBD |
 | No entity leaks across splits | 0 leaks | TBD |
+| **ARR reproduces the paper's resistance EM** | **0.16 – 0.33** | **TBD** |
+| Vendored metrics imported (not the fallback) | True | TBD |
+
+The ARR row is not optional. Test 3's kill criterion is measured *relative to* the
+best baseline, so a misconfigured comparator moves the gate without announcing it.
+If ARR lands outside 0.16–0.33, resolve that before reading Test 3 at all — check
+the prompt style, the fact set, and the measured-τ table below.
+
+### Which regime is each baseline actually in?
+
+Measured by `pilot/regime.py`, not read off names or `get_tau()`. Filled in by stage
+06 (`test3b.json` → `regimes`).
+
+| Method | effective τ | self-reported τ | regime | agree? |
+|---|---|---|---|---|
+| CAD | TBD | 1.5 | extrapolation | TBD |
+| AdaCAD | TBD | 1 + JSD | extrapolation | TBD |
+| CoCoA | TBD | 0.5 | **expect 1.5** | **expect NO** |
+| COIECD | TBD | TBD | TBD | TBD |
+| ARR | TBD | per-step ±s | **routes across τ=1** | TBD |
+
+CoCoA's row is the known discrepancy: the repo's `get_tau()` returns `alpha` (0.5)
+while the method operates at `alpha + gamma` (1.5). That is Table 1's `CoCoA*`
+extrapolation variant, not Eq. 5's pure blend — recorded in DECISIONS.md §11, with
+`gamma=0.0` available to recover Eq. 5 if a reviewer asks for that comparison.
 
 ---
 
@@ -240,21 +265,22 @@ global τ cannot.*
 
 | Method | Overall EM | Correction | Resistance | Agreement |
 |---|---|---|---|---|
-| greedy (context) | TBD | TBD | TBD | TBD |
-| greedy_no_ctx (prior) | TBD | TBD | TBD | TBD |
+| τ=1.0 (pure context, ≡ greedy) | TBD | TBD | TBD | TBD |
+| τ=0.0 (pure prior, ≡ greedy_no_ctx) | TBD | TBD | TBD | TBD |
 | CAD | TBD | TBD | TBD | TBD |
 | AdaCAD | TBD | TBD | TBD | TBD |
-| CoCoA | TBD | TBD | TBD | TBD |
+| CoCoA* (τ = α+γ = 1.5) | TBD | TBD | TBD | TBD |
 | COIECD | TBD | TBD | TBD | TBD |
-| GRD | TBD | TBD | TBD | TBD |
+| **ARR** (the published comparator) | TBD | TBD | TBD | TBD |
 | best fixed τ (τ = TBD) | TBD | TBD | TBD | TBD |
 | **oracle 3-way** | TBD | TBD | TBD | TBD |
 
 Tuned oracle constants: correction τ=TBD, resistance τ=TBD, agreement τ=TBD.
 
-Note on the comparator: the spec names "ARR", which does not exist in the vendored
-repo. GRD is the strongest published method there and is what the kill criterion is
-evaluated against — see DECISIONS.md §1.2.
+The comparator is **ARR** (Adaptive Regime Routing), the method arXiv 2606.10298
+publishes, from the pinned commit `320d88bc`. Note that the repo's HEAD replaced ARR
+with a different algorithm (GRD) on 2026-07-29; we deliberately do not use HEAD.
+DECISIONS.md §1.2 has the full account.
 
 ### Kill criterion
 

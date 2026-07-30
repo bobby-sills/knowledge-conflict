@@ -16,26 +16,71 @@ decide silently.
 
 The spec cites `github.com/keith-Jiang/conflict-aware-decoding`. That repo is now
 **`github.com/keith-Jiang/Gated-Reversal-Decoding`** — same authors, same paper
-(arXiv 2606.10298), renamed after the paper's method took the headline. Pinned at
-commit `581a4d59c4759fe513d099a8eee10b9849aab6a2` (main, 2026-07-29) in
-`config.VENDOR_COMMIT`.
+(arXiv 2606.10298). The rename happened on 2026-07-29, alongside the method swap
+described in §1.2, so it is a symptom of that rather than a separate event.
 
-### 1.2 There is no method called "ARR" **[build]**
+We pin `config.VENDOR_COMMIT = "320d88bc"` (2026-07-09), **not** HEAD, because HEAD
+no longer contains the method the paper publishes. See §1.2 for why.
 
-The spec's Test 3 says to compare against "CAD, AdaCAD, CoCoA and ARR from the
-public repo", and makes the kill criterion "oracle routing barely beats ARR". No
-method, file, or reference by that name exists in the repo, and we could not find a
-paper defining it.
+### 1.2 ARR is the paper's method; the repo replaced it mid-build **[build]**
 
-The repo's own method — and the strongest published comparator available — is
-**GRD (Gated Reversal Decoding)**, which the paper reports lifting resistance EM
-from 2.1 to 20.8. We have taken GRD to be what the spec meant, and Test 3's kill
-criterion is evaluated against the best of `{cad, adacad, cocoa, coiecd, grd,
-greedy}`. `powerfamily.check_test3_kill` compares against the strongest baseline
-run, whatever it is, so if "ARR" turns out to be something else, adding it to
-`config.VENDOR_METHODS` is sufficient.
+**Resolved: the spec is right. ARR is correct and is the Test 3 comparator.** An
+earlier version of this file claimed no such method existed, on the basis of a repo
+read that was accurate but badly timed. Recording the sequence, because the failure
+mode generalises.
 
-**This needs a human decision if GRD is not what was meant.**
+What happened:
+
+* arXiv 2606.10298 v1 (9 June 2026, still the only version) names **Adaptive Regime
+  Routing (ARR)** in its abstract, crediting it with lifting resistance EM "from
+  below 6 to 16--33".
+* `methods/arr.py` was present in the repo from its initial commit (8 June 2026)
+  through 9 July 2026.
+* On **29 July 2026 at 14:08 UTC**, commit `13738f76` deleted `arr.py`, added
+  `grd.py` (Gated Reversal Decoding), and the repo was renamed from
+  `conflict-aware-decoding` to `Gated-Reversal-Decoding`. Its README was rewritten
+  to present GRD as the paper's method, with different headline numbers (2.1 → 20.8
+  rather than <6 → 16–33).
+* We first read the repo at roughly 16:30 UTC the same day — about two hours after
+  the swap — found no mention of ARR anywhere, and wrongly concluded the spec had
+  named a method that did not exist.
+
+**GRD is a different algorithm, not a rename.** Diffed directly:
+
+| | ARR (`arr.py`, published) | GRD (`grd.py`, HEAD) |
+|---|---|---|
+| State | stateless, recomputed per step | stateful; locks the trusted branch at the first conflict step |
+| τ | `1 + s` if `p_ctx_max > p_pri_max` else `1 - s`, `s = JSD/log2` clipped to [0,1] | `(1 - λ)·τ*` with λ=0.75, τ* ∈ (0,1), so τ ≤ 0.25 |
+| Regime | routes across τ=1 — both extrapolation and interpolation | interpolation only; **never extrapolates** |
+| Gate | confidence asymmetry between ctx and prior | `p_prior_top > 0.5` **and** `H(prior) < H(ctx)` |
+
+So GRD cannot be the comparator: the paper's claim is about per-step routing between
+regimes, and GRD only ever interpolates.
+
+**What this changes in the code:**
+
+* `config.VENDOR_COMMIT` is pinned to **`320d88bc`** (9 July 2026), the last commit
+  containing `arr.py` — *not* HEAD. HEAD does not contain the paper's method. That
+  commit also has all four baselines, the metrics, and the TriState data, so nothing
+  is lost. `config.VENDOR_HEAD_WITH_GRD` records the HEAD sha without using it.
+* `VENDOR_METHODS = ("cad", "adacad", "cocoa", "coiecd", "arr")`. `greedy` and
+  `greedy_no_ctx` are dropped because they are exactly `PowerFamily(1.0)` and
+  `PowerFamily(0.0)`, already computed by the τ sweep.
+* `config.ARR_RESISTANCE_EM_TARGET = (0.16, 0.33)` — the paper's reported range, as
+  a **reproduction target**. Stage 06 flags if our ARR run lands outside it. This is
+  the check that does not depend on names: Test 3's kill criterion is measured
+  *relative to* the best baseline, so a wrong or misconfigured comparator silently
+  moves the gate.
+
+**The generalisable lesson.** Verifying against a repo is not verifying against the
+paper, and a repo can change under you mid-task. The three functional criteria
+(per-step routing across τ=1; gate driven by confidence asymmetry; resistance EM in
+16–33) identify the method whatever the file is called, which is why they are now
+encoded as a probe and a threshold rather than as a name match. See §11.
+
+If the authors revise the paper to publish GRD, add it back by pointing
+`VENDOR_COMMIT` at HEAD and appending `"grd"` to `VENDOR_METHODS`;
+`powerfamily.generate` already handles its stateful `select_next_token` interface.
 
 ### 1.3 Inside-Out released no fact set **[build]**
 
@@ -375,7 +420,69 @@ would matter.
 
 ---
 
-## 11. Results to be recorded here after running — **[open]**
+## 11. Which regime is each baseline actually in? **[build]**
+
+Measured, not read off a name. `pilot/regime.py` recovers the τ a method is really
+operating at by regressing its output on the log-space basis:
+
+    adjusted = (1 - τ)·log p_pri + τ·log p_ctx + c
+
+**Why bother.** The vendored `CoCoADecoding.get_tau()` returns `global_alpha` (0.5)
+while the method actually operates at `alpha + gamma` (1.5). That is the difference
+between interpolation and extrapolation — the entire distinction the paper is about —
+and it is wrong in the direction that matters. We log `mean_tau` from `get_tau()`, so
+without this we would have recorded 0.5 for a method sitting at 1.5.
+
+**The centring is load-bearing.** `c` is never zero: normalising leaves a constant,
+and CAD and AdaCAD combine *raw* logits, so their output differs from the log-space
+form by both partition functions. An uncentred projection is biased by
+`c·Σbasis/‖basis‖²`. Measured on a 2,000-token vocabulary, a true τ of 2.5 estimates
+as **−0.30** — confident, plausible, and on the wrong side of τ=1. Mean-centring both
+vectors fits the intercept implicitly and is exact to 1e-9 for every affine form
+(power family, CAD at any α, CoCoA at any α and γ). Both facts are pinned as tests.
+
+A large `affine_residual` means the method is not affine in log space and cannot be
+summarised by one τ at all, which is a useful answer rather than a failure.
+
+Stage 06 probes every baseline on a real conflict case before running it, prints the
+effective τ next to the self-reported one, flags disagreements, and saves the table
+to `test3b.json` under `regimes`.
+
+### The CoCoA ambiguity, resolved empirically
+
+The paper is internally inconsistent about CoCoA: its Eq. 5 gives a pure blend
+`q ∝ p_ctx^λ · p_pri^(1−λ)` (interpolation, τ = λ), while Table 1 lists the row as
+**CoCoA\*** with τ = λ + γ, classified as extrapolation. The asterisk suggests they
+are tabulating a modified variant rather than CoCoA as published.
+
+What the code actually does, verified numerically:
+
+* `s_mix = α·log p_ctx + (1−α)·log p_pri + γ·(log p_ctx − log p_pri)`, which is
+  algebraically `(α+γ)·log p_ctx + (1−α−γ)·log p_pri` — matching the power family at
+  τ = α + γ to 7e-15.
+* Repo defaults are `α=0.5, γ=1.0`, so **τ = 1.5: extrapolation, i.e. Table 1's
+  CoCoA\*, not Eq. 5.**
+* **γ is exposed** as a constructor parameter, so `gamma=0.0` recovers Eq. 5 exactly
+  at τ = α = 0.5. Surfaced as `config.COCOA_GAMMA`.
+* The `lambda_pm=100.0` median/MAD z-score term is a *monotone* transform of
+  `s_mix`, so it preserves the entire ranking and is a **no-op for greedy decoding**
+  (verified: argsort identical, nothing clamped at the ±100 bound). It matters only
+  for sampling.
+
+**Decision: run the repo's defaults (τ = 1.5) so our numbers match their table, and
+report the effective τ alongside every baseline so the reading is unambiguous.** A
+reviewer asking "which CoCoA is this?" is answered by `regimes` in `test3b.json`
+rather than by our word.
+
+Note this partly vindicates the argument that blending cannot exceed `p_ctx`: if
+CoCoA as *published* is Eq. 5, it is interpolation and is so bounded. What cannot be
+claimed is novelty — it is Corollary 5 of arXiv 2606.10298. **Still open:** read the
+original CoCoA paper's own equation and record which version each side is comparing
+against. Reviewers will ask.
+
+---
+
+## 12. Results to be recorded here after running — **[open]**
 
 - [ ] Ambiguous fraction from stage 01, and whether 6/8 and 0/8 held up (§1.6).
 - [ ] Agreement rate between our prior labels and TriState-Bench's GAPS labels.

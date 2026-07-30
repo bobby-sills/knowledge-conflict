@@ -9,10 +9,27 @@ Five tests, run in order, each with a kill criterion fixed in advance. If one
 fires, the pipeline stops. Results go in [`RESULTS.md`](RESULTS.md); every
 judgement call the spec left open is recorded in [`DECISIONS.md`](DECISIONS.md).
 
-**Status: running.** Test 0 (fact set + prior screening) and the logit-lens
-instrument check are done on `Meta-Llama-3-8B-Instruct` on an A100-40GB; capture and
-Tests 1–4 are outstanding. 278 tests pass without a GPU, plus 40 slow tests against a
-real model. The model-touching stages need a Colab session (see below).
+## 🔴 Outcome: no-go. Test 1's kill criterion fired.
+
+Run 2026-07-29 on `Meta-Llama-3-8B-Instruct`, A100-40GB, 600 PopQA facts → 683 conflict
+cases.
+
+Internal and external answers **diverge on 50.2% of facts** — five times the 10% floor.
+But where they diverge, the **output distribution is right more often than the internal
+state: 24.0% vs 19.8%**. And on 56.2% of divergent facts neither is right, so divergence
+tracks the model's *ignorance* rather than a correct answer the output layer suppressed.
+
+Tests 2–4 were not run. No threshold was adjusted after seeing the result, and the
+`report` split is still locked. Both instrument checks passed first, so this is a
+measurement and not an artefact — the lens reconstructs the model's logits to half a
+bf16 ULP (wrong convention 89.5× worse), and the final-layer lens matches the external
+scores to 5.0e-7.
+
+Full numbers in [`RESULTS.md`](RESULTS.md); what the pilot did *and did not* rule out is
+at the end of that file. The reasoning behind every judgement call, including the one
+instrument bug that cost a session, is in [`DECISIONS.md`](DECISIONS.md) §10 and §13.
+
+278 tests pass without a GPU, plus 40 slow tests against a real model.
 
 ---
 

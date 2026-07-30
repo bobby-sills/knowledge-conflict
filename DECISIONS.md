@@ -539,8 +539,56 @@ against. Reviewers will ask.
 - [x] `lens_check.json`: which convention the lens found, and the reconstruction error.
       **`post_norm`, err 0.0625 = 0.50 ULP of bf16, 89.5× separation, top-64 order
       preserved.** See §10.
-- [ ] First-token-usable fraction, and whether Test 1 changed when restricted to it.
-- [ ] Whether the vendored metrics imported, or the fallback was used (§1.7).
-- [ ] The three tuned oracle τ constants.
-- [ ] Measured two-pass overhead, batched and serial — the answer to the spec's "is
-      2× real?" question.
+- [x] First-token-usable fraction, and whether Test 1 changed when restricted to it.
+      **94.3% (511/542) usable; 230 of the 241 reported facts. Test 1 did not change:**
+      gap −0.032 → −0.029, divergence 50.2% → 49.1%, on-divergent internal 19.8% →
+      21.2% against external 24.0% → 25.7%. The kill fires either way, so first-token
+      collisions are not driving it.
+- [x] Also worth recording, because it is the second instrument check the spec
+      requires: the **final-layer lens equals the external score to 5.0e-7** (threshold
+      1e-3) across all 542 facts, and all 542 rank the candidates identically at layer
+      32. The internal-vs-external comparison measures what it claims.
+- [ ] ~~Agreement rate with TriState-Bench's GAPS labels~~ — not run; Test 1 fired
+      first. Would still be worth having if the direction is revisited.
+- [ ] ~~Whether the vendored metrics imported, or the fallback was used (§1.7)~~ —
+      Test 3 never ran.
+- [ ] ~~The three tuned oracle τ constants~~ — Test 3 never ran.
+- [ ] ~~Measured two-pass overhead~~ — stage 08 never ran. Note the spec's "is 2× real?"
+      question is now moot for this project: there is nothing worth paying 2× for.
+
+---
+
+## 13. Outcome — **[closed]**
+
+**Test 1's kill criterion fired on 2026-07-29 and the pilot stopped there.** Divergence
+between the layer-28 lens and the output distribution is 50.2%, comfortably over the 10%
+floor; but on the divergent subset the internal reading is correct 19.8% of the time
+against the output distribution's 24.0%. The premise — that the residual stream is the
+better arbiter — is false on this model and fact set, in the direction that matters.
+
+Three things are worth recording about *how* the result was reached, since they are the
+part that generalises:
+
+**The layer split earned its keep.** Layer 28 was chosen because it maximised the
+internal score on the `layer` split, where it beats the final layer by +0.021. On
+`train` the same layer is behind by −0.032. A ~5-point swing at n ≈ 241 is selection
+noise, and had the layer been picked on the reporting split this pilot would have
+produced a positive result that meant nothing. The `report` split was never unlocked.
+
+**The instrument checks ran before the result was read, and one of them failed first**
+for a reason that had nothing to do with the science — a tolerance of 2e-2 against a
+bf16 error floor of 0.0625 (§10). That cost a session, but it failed *closed*: nothing
+was captured under a half-verified lens. Both checks passed on the retry, which is what
+makes the null a measurement rather than an artefact.
+
+**The most informative number was not in the kill criterion.** On 56.2% of divergent
+facts neither reading is correct. So divergence is high not because the output layer is
+garbling an answer the model knows, but because the model does not know the answer and
+the two readings disagree in the noise. That reframes the 50.2% from evidence *for* the
+premise into evidence about the fact set, and it is the number to lead with when
+explaining the outcome to someone who expects a high divergence rate to be encouraging.
+
+What was **not** ruled out is set out at the end of RESULTS.md — chiefly that a
+*trained probe* on the same residuals is a different instrument and this is not evidence
+about it. That would be a new experiment needing its own kill criterion fixed in
+advance, not a retry of this one.

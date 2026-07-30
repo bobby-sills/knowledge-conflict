@@ -1,16 +1,27 @@
 # RESULTS
 
-**Status: pipeline built, not yet run.** No model has been executed. Every number
-below is a placeholder marked `TBD`, and the kill-criterion column is unfilled by
-design — the thresholds are fixed in `pilot/config.py:KillCriteria` and were
-written before any result existed.
+## 🔴 Verdict: no-go. Test 1's kill criterion fired.
 
-Write this file **as you go**, not at the end. One section per test, filled in as
-each stage completes, with the plots inlined from `figures/`.
+**Internal and external answers diverge on half the fact set — but where they diverge,
+the output distribution is right more often than the internal state (24.0% vs 19.8%).**
+The premise of the project is that the residual stream is the better arbiter. On
+Llama-3-8B-Instruct over 600 PopQA facts, it is the worse one.
+
+Tests 2, 3 and 4 were not run. No threshold was adjusted and no variant was tried
+after the result was seen. The `report` split is still locked and unexamined.
+
+Both instrument checks passed *before* the result was read, so this is a measurement
+rather than an artefact: the logit lens reconstructs the model's logits to half a bf16
+ULP with the wrong convention 89.5× worse, and the final-layer lens matches the
+external scores to 5.0e-7.
+
+Run: 2026-07-29, A100-40GB, ~5 min for capture. Details below; the reasoning behind
+every judgement call is in [DECISIONS.md](DECISIONS.md).
 
 Model: `meta-llama/Meta-Llama-3-8B-Instruct`, bf16.
-Fact set: PopQA, target 2,000 facts (see DECISIONS.md §2).
-Vendored baselines: `keith-Jiang/Gated-Reversal-Decoding` @ `581a4d59`.
+Fact set: PopQA, **600 facts** → 683 conflict cases (see DECISIONS.md §2).
+Vendored baselines: `keith-Jiang/Gated-Reversal-Decoding` @ `320d88bc` — never
+reached, since Test 3 did not run.
 
 ---
 
@@ -23,11 +34,11 @@ succeeded.
 
 | Test | Criterion (fixed in advance) | Result | Fired? |
 |---|---|---|---|
-| 0 | none — diagnostic | TBD | n/a |
-| 1 | divergence ≥ 10% **and** internal beats external on the divergent subset | TBD | TBD |
-| 2 | best internal ≥ best external + 0.05 AUC, non-overlapping CIs | TBD | TBD |
-| 3 | oracle 3-way routing ≥ best baseline + 0.05 EM | TBD | TBD |
-| 4 | shuffled signal recovers ≤ 50% of the real gain | TBD | TBD |
+| 0 | none — diagnostic | 683 cases; 141 resistance; 9.7% ambiguous | n/a |
+| 1 | divergence ≥ 10% **and** internal beats external on the divergent subset | divergence **50.2%** ✔; on divergent internal **0.198** vs external **0.240** ✘ | **🔴 YES** |
+| 2 | best internal ≥ best external + 0.05 AUC, non-overlapping CIs | not run | — |
+| 3 | oracle 3-way routing ≥ best baseline + 0.05 EM | not run | — |
+| 4 | shuffled signal recovers ≤ 50% of the real gain | not run | — |
 
 **Instrument check (must pass before Test 1 is believed):**
 
@@ -178,27 +189,52 @@ noting for the write-up: the guardrail behaved correctly in the sense that matte
 it stopped the pipeline before any data was captured, rather than letting a
 half-verified instrument through.
 
+A second validity check, also required before believing anything below: the
+final-layer lens *is* the output distribution, so the internal score at layer 32 must
+equal the external score. **Max |lens(L32) − external| = 5.0e-7** across all 542 facts
+(threshold 1e-3), and all 542 rank the candidates identically at the final layer. The
+internal-vs-external comparison therefore measures what it claims to.
+
 ### Knowledge scores
+
+Layer chosen on the `layer` split, reported on `train` (n = 241 facts).
 
 | | Score |
 |---|---|
-| internal (logit lens, best layer) | TBD |
-| external (output probabilities) | TBD |
-| gap | TBD |
+| internal (logit lens, layer 28) | 0.7443 |
+| external (output probabilities) | 0.7759 |
+| gap | **−0.0316** |
 
-Best layer: **TBD** of 32. (Expect mid-to-late.)
+Best layer: **28** of 32 — mid-to-late, as expected.
 
 ![knowledge by layer](figures/test1_knowledge_by_layer.png)
+
+**The layer-28 peak does not replicate out of sample, and that is the whole story.**
+The per-layer curve on the selection split is flat at ~0.48 through layer 14, then
+climbs monotonically to a peak of 0.7844 at layer 28 and falls back to 0.7631 at layer
+32. Because layer 32 is by construction the external score, on the *selection* split
+the best internal layer beats external by +0.021. On `train` the same layer is behind
+by −0.032:
+
+| Split | Layer 28 (chosen) | Layer 32 (= external) | Internal − external |
+|---|---|---|---|
+| `layer` (selection) | 0.7844 | 0.7631 | **+0.021** |
+| `train` (report) | 0.7443 | 0.7759 | **−0.032** |
+
+A ~5-point swing between splits at n ≈ 241 is what selection noise looks like. The
+mid-layer advantage is an artefact of choosing the layer that maximised it, and the
+held-out split is the number that counts. Had the layer been selected on `train`, this
+row would have read positive and meant nothing — which is exactly why the split exists.
 
 ### Divergence
 
 | | Value |
 |---|---|
-| internal top-1 ≠ external top-1 | TBD |
-| n diverged | TBD |
-| on divergent: internal correct, external wrong | TBD |
-| on divergent: external correct, internal wrong | TBD |
-| on divergent: both wrong | TBD |
+| internal top-1 ≠ external top-1 | **50.2%** |
+| n diverged | 121 of 241 |
+| on divergent: internal correct | 19.8% |
+| on divergent: external correct | **24.0%** |
+| on divergent: both wrong | 56.2% |
 
 ![internal vs external](figures/test1_scatter.png)
 
@@ -206,20 +242,68 @@ Best layer: **TBD** of 32. (Expect mid-to-late.)
 separates facts where the internals rank the gold better than the output
 distribution does.*
 
+**The first clause passes handsomely and the second fails.** Internal and external
+disagree on half the fact set — five times the 10% floor — so the phenomenon the
+project is premised on is unambiguously real. What fails is the claim that follows it:
+where they disagree, the output distribution is right *more* often than the internal
+state, 24.0% against 19.8%.
+
+The third row is the one that explains the other two. On 56.2% of divergent facts
+**neither** signal is right. Divergence is not concentrated where the model quietly
+knows the answer and the output layer garbles it; it is concentrated where the model
+does not know the answer at all, and the two readings disagree because both are noise.
+That is a coherent alternative account of why divergence is high, and it does not
+support an arbiter.
+
 ### First-token collisions
 
-Usable (collision-free) facts: TBD. Test 1 restricted to those: TBD. If the
-restricted and unrestricted numbers disagree materially, collisions are driving the
-result and the restricted number is the one to believe.
+Usable (collision-free) facts: **511/542 (94.3%)** at capture; **230 of the 241**
+reported facts. Restricting Test 1 to them changes nothing material:
+
+| | All 241 | Usable 230 |
+|---|---|---|
+| gap | −0.0316 | −0.0285 |
+| divergence rate | 50.2% | 49.1% |
+| on divergent: internal | 19.8% | 21.2% |
+| on divergent: external | 24.0% | 25.7% |
+
+The kill fires on both. Collisions are not driving the result.
 
 ### Kill criterion
 
 Divergence ≥ 10% **and** internal beating external on the divergent subset:
-**TBD**.
+
+> ### 🔴 FIRED — the pilot stops here.
+>
+> - Divergence 50.2% ≥ 10% — **passes**.
+> - On the divergent subset, internal 0.198 vs external 0.240 — **fails**.
+>
+> `results/test1/test1.json` → `kill.fired = true`.
+
+Per the spec and `pilot/config.py`, Tests 2, 3 and 4 were **not run**. No threshold was
+adjusted, no alternative layer, score, or prompt variant was tried after seeing this
+result. The `report` split remains locked and unexamined.
+
+Both instrument checks passed before this was read (lens at 0.50 ULP with 89.5×
+separation; final-layer lens matching external to 5.0e-7), so the null is a measurement
+and not an artefact.
 
 ---
 
-## Test 2 — Does the internal signal predict the *decision*?
+## Tests 2–4 — not run
+
+Test 1's kill criterion fired, so the pipeline stopped. Stages 04–08 were never
+executed and every number below remains TBD by design, not by omission. They are left
+in place because the code is written and tested, and a revised premise (see "What we
+can answer, with numbers") could make them worth running.
+
+One measurement from Test 0 is worth carrying forward to whoever runs Test 2 next: the
+0.89-decade popularity gap between correction and resistance means log-popularity will
+post a strong AUC on that binary by itself. The bar there was never 0.5.
+
+---
+
+## Test 2 — Does the internal signal predict the *decision*? — **NOT RUN**
 
 *Stage: `python -m pilot.cli test2`. Artefacts: `results/test2/test2.json`.*
 *Directions and thresholds fitted on `train`; AUCs reported on `layer`.*
@@ -388,13 +472,45 @@ Conclusion: TBD.
 The five questions the pilot exists to answer:
 
 1. **Do internal and external knowledge measurements diverge on this model? By how
-   much?** — TBD
-2. **When they diverge, is the internal one right?** — TBD
+   much?** — **Yes, a lot. 50.2% of facts** have a different top-1 candidate under the
+   layer-28 lens than under the output distribution. Five times the 10% floor.
+2. **When they diverge, is the internal one right?** — **No.** Internal 19.8%, external
+   24.0%. And on 56.2% of divergent facts neither is right, which is the more
+   informative number: divergence tracks *ignorance*, not a suppressed correct answer.
 3. **Does an internal signal predict the resist-or-correct decision better than the
-   six output-distribution signals the field currently uses?** — TBD
-4. **What is the ceiling if the signal were perfect?** — TBD
-5. **Is any apparent gain per-question adaptivity, or a global rescale?** — TBD
+   output-distribution signals the field uses?** — **Not run.** Test 1 is the
+   precondition; there is no reason to price an arbiter that loses to what it replaces.
+4. **What is the ceiling if the signal were perfect?** — Not run.
+5. **Is any apparent gain per-question adaptivity, or a global rescale?** — Not run.
 
-**Recommendation: TBD.** If (1)-(3) come back positive and (4) shows headroom and
-(5) survives, build the full project. Otherwise we have learned something real and
-saved four months — state that plainly, without editorialising it into a maybe.
+### Recommendation: do not build the full project as specified.
+
+The specific claim the four-month project rests on — that the residual stream holds a
+better answer than the output layer, which contrastive decoding then fails to exploit —
+is false on this model and fact set, in the direction that matters. The output
+distribution is not a degraded view of a cleaner internal state; on the facts where the
+two disagree it is the *better* view.
+
+Stated plainly and without hedging it into a maybe: **this saves roughly four months.**
+
+**What the pilot did *not* rule out**, stated precisely so it is not overread:
+
+- That divergence is real and large (50.2%). That part of the premise held.
+- That a *trained probe* could beat the output distribution. We tested the untrained
+  logit lens, which the spec chose deliberately as the cheap first look. A probe
+  trained on the residual stream is a different instrument and this is not evidence
+  about it — though note the ceiling it would have to clear: on 56% of divergent facts
+  the gold answer is not top-1 in either reading, so the headroom a probe is competing
+  for is smaller than the 50% divergence rate suggests.
+- That the result holds beyond Llama-3-8B-Instruct, PopQA long-tail facts, and
+  synthetic single-claim documents. All three are narrow, and the documents in
+  particular are the limitation flagged in Test 0.
+- That first-token scoring is the right granularity. It is what the lens can see, so
+  the comparison is apples-to-apples, but a full-span internal score is not something
+  a single-position lens can provide.
+
+**If one thing were to be re-run before abandoning the direction**, it is Test 1 with a
+trained linear probe in place of the logit lens, on the same captured residuals — the
+capture is on disk, the `report` split is still clean, and it is hours rather than
+months. That is a different experiment with a different premise, not a retry of this
+one, and it should get its own kill criterion fixed in advance.
